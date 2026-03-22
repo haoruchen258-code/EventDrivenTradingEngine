@@ -7,4 +7,4 @@ enum class Signal {
     HOLD
 };
 
-Signal computeSignal(int shortLen, int longLen, std::vector<double>& prices);
+Signal computeSignal(const std::vector<double> &prices, int shortLen = 5, int longLen = 20);
