@@ -5,6 +5,7 @@
 #include <fstream> // std::ofstream — 用于写入 CSV 日志文件
 #include <iostream>
 #include <thread>
+#include "risk.h" // 新增：引入风险管理模块（Week 7）
 
 void runEngine(const std::vector<Tick> &ticks) {
   std::cout << "引擎启动，共加载 " << ticks.size() << " 条行情数据。"
@@ -31,6 +32,7 @@ void runEngine(const std::vector<Tick> &ticks) {
     // ── 每轮开始时初始化账户 ──────────────────────────
     // 初始资金设为 10000，每轮重置，便于重复回测
     Portfolio portfolio = createPortfolio(10000.0);
+    RiskManager rm = createRiskManager(10000.0);
 
     // ── 每轮开始时创建（或覆盖）日志文件 ──────────────
     // std::ofstream 以写入模式打开文件；若文件已存在则从头覆盖
@@ -53,7 +55,7 @@ void runEngine(const std::vector<Tick> &ticks) {
     // 内层循环：逐条处理每一笔行情数据
     for (int i = 0; i < (int)ticks.size(); i++) {
       double price = ticks[i].price;
-
+      std::string date = ticks[i].date;
       // ── 方向判断（沿用 Week 3 的逻辑）──────────────
       std::string direction;
       if (price > prevPrice)
@@ -81,31 +83,49 @@ void runEngine(const std::vector<Tick> &ticks) {
       // ── 订单执行（Week 5 新增）──────────────────────
       // executeBuy / executeSell 会修改 portfolio 的内部状态
       // 它们返回 true 表示本次成交成功，false 表示忽略（无持仓可卖 / 已有持仓）
-      if (sig == Signal::BUY) {
-        bool traded = executeBuy(portfolio, ticks[i].date, price);
-        if (traded) {
-          std::cout << "  [买入成交] " << portfolio.tradeLog.back().quantity
-                    << " 股 @ " << price
-                    << "  手续费: " << portfolio.tradeLog.back().commission
-                    << "  剩余现金: " << portfolio.cash << std::endl;
+      
+
+      if (rm.halted) {
+        // 规则 2：如果熔断时仍有持仓，强制卖出
+        if (portfolio.position > 0) {
+          bool sold = executeSell(portfolio, date, price);
+          if (sold) {
+            std::cout << "  [强制平仓] " << date << "  卖出 "
+                      << portfolio.tradeLog.back().quantity << " 股 @ " << price
+                      << std::endl;
+          }
         }
-      } else if (sig == Signal::SELL) {
-        bool traded = executeSell(portfolio, ticks[i].date, price);
-        if (traded) {
-          std::cout << "  [卖出成交] " << portfolio.tradeLog.back().quantity
-                    << " 股 @ " << price
-                    << "  手续费: " << portfolio.tradeLog.back().commission
-                    << "  剩余现金: " << portfolio.cash << std::endl;
+        // 规则 1：熔断状态下不执行任何 BUY 信号，直接跳到净值计算
+      } else {
+        // 正常状态：按信号执行
+        if (sig == Signal::BUY) {
+          bool traded = executeBuy(portfolio, date, price);
+          if (traded) {
+            std::cout << "  [买入成交] " << portfolio.tradeLog.back().quantity
+                      << " 股 @ " << price
+                      << "  手续费: " << portfolio.tradeLog.back().commission
+                      << "  剩余现金: " << portfolio.cash << std::endl;
+          }
+        } else if (sig == Signal::SELL) {
+          bool traded = executeSell(portfolio, date, price);
+          if (traded) {
+            std::cout << "  [卖出成交] " << portfolio.tradeLog.back().quantity
+                      << " 股 @ " << price
+                      << "  手续费: " << portfolio.tradeLog.back().commission
+                      << "  剩余现金: " << portfolio.cash << std::endl;
+          }
         }
       }
 
       // ── 计算并打印当前账户净值 ───────────────────────
       // getNetValue = 现金 + 持仓 × 当前价格
       double netValue = getNetValue(portfolio, price);
+      updateRisk(rm, netValue, date);
 
-      std::cout << ticks[i].date << "  " << direction << "  " << sigStr
+      std::cout << date << "  " << direction << "  " << sigStr
                 << "  price: " << price << "  net_value: " << netValue
-                << std::endl;
+                << "  drawdown: " << rm.drawdown * 100.0 << "%"
+                << (rm.halted ? "  [熔断中]" : "") << std::endl;
 
       // ── 将本行数据写入信号日志 ────────────────────────
       // signals.csv 新增了 NetValue 列，供 Week 7 绘制净值曲线
@@ -145,7 +165,9 @@ void runEngine(const std::vector<Tick> &ticks) {
     double finalNetValue = getNetValue(portfolio, ticks.back().price);
     std::cout << "最终总价值: " << finalNetValue
               << "  盈亏: " << (finalNetValue - 10000.0) << std::endl;
-
+    std::cout << "历史最大回撤: " << rm.maxDrawdown * 100.0 << "%"
+              << (rm.halted ? "  （本轮已触发熔断）" : "  （本轮未触发熔断）")
+              << std::endl;
     std::cout << std::endl;
     std::cout << "数据播放完毕。日志已写入 data/signals.csv 和 "
                  "data/trades.csv。重新开始..."
